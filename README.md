@@ -19,3 +19,9 @@ You have two options:
 2. Set `env__VAR=VAL` in `eva.ini`
 
 Note that (1) overrides (2).
+
+## Todo
+
+- [ ] Also store PID (look at [procinfo](https://docs.rs/crate/procinfo/0.4.2))
+- [ ] Live process memory usage, etc.
+- [ ] Email alerts (SendGrid, MailChimp, ... ?)
