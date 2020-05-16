@@ -1,0 +1,15 @@
+[package]
+name = "eva"
+version = "0.1.0"
+authors = ["Pol Gómez Riquelme <gomezp@uchicago.edu>"]
+edition = "2018"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+log = "0.4"
+env_logger = "0.7"
+regex = "1.3.7"
+rust-ini = "0.15.2"
+futures = "0.3.5"
+tokio = { version = "0.2", features = ["full"] }
