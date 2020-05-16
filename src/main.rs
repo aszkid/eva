@@ -79,6 +79,7 @@ async fn run_svc(svc: &Service) {
             () = pipe_stdout => {},
             () = pipe_stderr => {},
             ret = cmd_fused => {
+                info!("service {} shut down", &svc.name);
                 maybe_exit_status = Some(ret.map_err(|e| format!("capturing exit status failed: {:?}", e)).unwrap());
             },
             complete => break,
