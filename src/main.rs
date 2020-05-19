@@ -55,6 +55,7 @@ async fn run_svc(svc: &Service) {
     let mut conn = svc.pool.get().map_err(|e| format!("failed to get connection: {:?}", e)).unwrap();
     let mut cmd = Command::new(&svc.exec)
         //.env_clear()
+        .env("LD_PRELOAD", "./libstub.so")
         .envs(svc.vars.clone())
         .envs(vars)
         .stdout(std::process::Stdio::piped())

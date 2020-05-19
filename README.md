@@ -2,6 +2,12 @@
 
 Lightweight, batteries-included process monitor.
 
+## Building
+
+1. Run `gcc -shared src/stub.c -o libstub.so`
+2. Run `cargo build`
+3. Profit!
+
 ## Service definition
 In `eva.ini`:
 ```
