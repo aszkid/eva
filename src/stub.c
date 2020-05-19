@@ -2,12 +2,9 @@
 #include <stdio.h>
 #include <sys/socket.h>
 #include <sys/un.h>
-
-extern void eva_syslog(int priority, char* buf);
-
-#define CLIENT_SOCK_FILE "eva_client.sock"
-#define SERVER_SOCK_FILE "eva_server.sock"
-static int fd = -1;
+#include <unistd.h>
+#include <stddef.h>
+#include <stdlib.h>
 
 void syslog(int priority, char* fmt, ...)
 {
@@ -18,34 +15,26 @@ void syslog(int priority, char* fmt, ...)
     char buf[1+vsnprintf(NULL, 0, fmt, args1)];
     va_end(args1);
     vsnprintf(buf, sizeof buf, fmt, args2);
-    va_end(args2); 
-    
-    printf("hi from C!\n");
-    eva_syslog(priority, buf);
+    va_end(args2);
+
+    char SERVER_SOCK_FILE[512];
+    sprintf(SERVER_SOCK_FILE, "/home/aszkid/dev/eva/eva_server.%s.sock", getenv("EVA_SERVICE"));
 
     struct sockaddr_un addr;
-    struct sockaddr_un from;
-    int ret;
-    int len;
+    int len, fd;
 
-    if (fd == - 1 && (fd = socket(PF_UNIX, SOCK_DGRAM, 0)) < 0) {
+    if ((fd = socket(AF_UNIX, SOCK_STREAM, 0)) < 0) {
         perror("socket");
         return;
     }
 
     memset(&addr, 0, sizeof(addr));
     addr.sun_family = AF_UNIX;
-    strcpy(addr.sun_path, CLIENT_SOCK_FILE);
-    unlink(CLIENT_SOCK_FILE);
-    if (bind(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
-        perror("bind");
-        return;
-    }
-
-    memset(&addr, 0, sizeof(addr));
-    addr.sun_family = AF_UNIX;
     strcpy(addr.sun_path, SERVER_SOCK_FILE);
-    if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)) == -1) {
+    len = (offsetof (struct sockaddr_un, sun_path)
+        + strlen(addr.sun_path) + 1);
+
+    if (connect(fd, (struct sockaddr *)&addr, len) == -1) {
         perror("connect");
         return;
     }
@@ -55,9 +44,6 @@ void syslog(int priority, char* fmt, ...)
         return;
     }
 
-    if (fd >= 0)
-        close(fd);
-
-    unlink(CLIENT_SOCK_FILE);
+    close(fd);
 }
 

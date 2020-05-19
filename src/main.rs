@@ -56,6 +56,7 @@ async fn run_svc(svc: &Service) {
     let mut cmd = Command::new(&svc.exec)
         //.env_clear()
         .env("LD_PRELOAD", "./libstub.so")
+        .env("EVA_SERVICE", &svc.name)
         .envs(svc.vars.clone())
         .envs(vars)
         .stdout(std::process::Stdio::piped())
@@ -148,6 +149,42 @@ async fn main() -> Result<(), String> {
             error!("   skipped, no executable!");
         }
     }
+
+    services.iter().for_each(|the_svc| {
+        // TODO: cloning this is nasty, figure out a way to appease the compiler
+        //       or make `new_event` not require a service reference
+        let svc = the_svc.clone();
+        let mut conn = svc.pool.get().unwrap();
+        tokio::spawn(async move {
+            use tokio::net::UnixListener;
+            use tokio::stream::StreamExt;
+
+            let eva_sockfile = format!("/home/aszkid/dev/eva/eva_server.{}.sock", &svc.name);
+            match std::fs::remove_file(&eva_sockfile) {
+                Err(e) => {
+                    if e.kind() != std::io::ErrorKind::NotFound {
+                        error!("failed to remove sockfile: {:?}", e);
+                        return;
+                    }
+                }
+                _ => {}
+            }   
+            
+            let mut listener = UnixListener::bind(&eva_sockfile).unwrap();
+            while let Some(stream) = listener.next().await {
+                match stream {
+                    Ok(mut stream) => {
+                        let mut data = String::new();
+                        stream.read_to_string(&mut data).await.unwrap();
+                        new_event(&mut conn, &svc, "SYSLOG", &data).expect("insert failed");
+                    },
+                    Err(e) => {
+                        println!("error! {:?}", e);
+                    }
+                }
+            }
+        });
+    });
 
     let futs = services.iter().map(|svc| {
         run_svc(svc)
