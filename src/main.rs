@@ -105,7 +105,6 @@ async fn capture_syslog(svcs: Arc<HashMap<String, Service>>, stream: tokio::net:
     let reader = BufReader::new(stream);
     let mut lines = reader.lines();
     if let Some(name) = lines.next_line().await.unwrap() {
-        info!("new service connected: {}", &name);
         if let Some(svc) = svcs.get(&name) {
             let mut conn = svc.pool.get().unwrap();
             while let Some(line) = lines.next_line().await.unwrap() {
@@ -115,9 +114,6 @@ async fn capture_syslog(svcs: Arc<HashMap<String, Service>>, stream: tokio::net:
                 new_event(&mut conn, &svc, "SYSLOG", line.trim_matches('\0')).expect("insert failed");
             }
         }
-    } else {
-        error!("didn't get a service notice!");
-        return;
     }
 }
 
