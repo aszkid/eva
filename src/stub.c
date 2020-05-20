@@ -8,18 +8,37 @@
 #include <time.h>
 #include <stdbool.h>
 #include <arpa/inet.h>
+#include <stdint.h>
+
+#if defined(__linux__)
+#  include <endian.h>
+#elif defined(__FreeBSD__) || defined(__NetBSD__)
+#  include <sys/endian.h>
+#elif defined(__OpenBSD__)
+#  include <sys/types.h>
+#  define be16toh(x) betoh16(x)
+#  define be32toh(x) betoh32(x)
+#  define be64toh(x) betoh64(x)
+#endif
 
 #define SERVER_SOCK_FILE "/home/aszkid/dev/eva/eva_server.sock"
 int fd = -1;
 
+int64_t time_nsec()
+{
+    struct timespec t;
+	clock_gettime(CLOCK_REALTIME, &t);
+    int64_t nsec = (int64_t)(t.tv_sec) * (int64_t)1e9 + (int64_t)(t.tv_nsec);
+    return htobe64(nsec);
+}
 
 void _eva_send(char *payload, bool first)
 {
-    long int tstamp = htonl(time(NULL));
+    int64_t tstamp = time_nsec();
 
     // send timestamp
     if (!first) {
-        if (send(fd, &tstamp, sizeof(long int), 0) == -1) {
+        if (send(fd, &tstamp, sizeof(int64_t), 0) == -1) {
             perror("send");
             return;
         }

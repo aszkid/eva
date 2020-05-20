@@ -102,6 +102,8 @@ async fn run_svc(svc: &Service) {
 }
 
 async fn capture_syslog(svcs: Arc<HashMap<String, Service>>, stream: tokio::net::UnixStream) {
+    use std::convert::TryInto;
+
     let mut reader = BufReader::new(stream);
     let mut buf = Vec::with_capacity(512);
     if let Ok(_) = reader.read_until(b'\0', &mut buf).await {
@@ -110,8 +112,9 @@ async fn capture_syslog(svcs: Arc<HashMap<String, Service>>, stream: tokio::net:
         if let Some(svc) = svcs.get(name) {
             buf.clear();
             let mut conn = svc.pool.get().unwrap();
-            while let Ok(tstamp) = reader.read_i32().await {
-                let timestamp = DateTime::<Utc>::from_utc(NaiveDateTime::from_timestamp(tstamp.into(), 0), Utc);
+            while let Ok(nanos) = reader.read_u64().await {
+                let dur = std::time::Duration::from_nanos(nanos);
+                let timestamp = DateTime::<Utc>::from_utc(NaiveDateTime::from_timestamp(dur.as_secs().try_into().unwrap(), dur.subsec_nanos()), Utc);
                 while let Ok(n) = reader.read_until(b'\0', &mut buf).await {
                     // TODO
                     // weird, i don't know why we're getting a null byte right after the timestamp
