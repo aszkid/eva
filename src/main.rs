@@ -1,4 +1,4 @@
-use log::{info, error};
+use log::{info, error, debug};
 use ini::Ini;
 use tokio::{
     process::Command,
@@ -23,6 +23,7 @@ struct Service {
 }
 
 fn new_event(conn: &mut Connection, svc: &Service, pipe: &str, data: &str) -> Result<usize, String> {
+    debug!("new_event({}:{}) = `{}`", &svc.name, pipe, data);
     conn.execute(
         "INSERT INTO event (service, run, timestamp, pipe, data)
             VALUES (?1, ?2, ?3, ?4, ?5)",
@@ -46,7 +47,6 @@ where R: AsyncRead + Unpin {
     while let Some(s) = lines.next_line().await.expect("failed to get line") {
         new_event(&mut conn, &svc, pipe_name, &s).expect("insert failed");
     }
-    info!("pipe {} is down", pipe_name);
 }
 
 async fn run_svc(svc: &Service) {
@@ -109,16 +109,13 @@ async fn capture_syslog(svcs: Arc<HashMap<String, Service>>, stream: tokio::net:
         if let Some(svc) = svcs.get(&name) {
             let mut conn = svc.pool.get().unwrap();
             while let Some(line) = lines.next_line().await.unwrap() {
-                info!("syslog({}): {}", &svc.name, &line);
                 new_event(&mut conn, &svc, "SYSLOG", &line).expect("insert failed");
             }
-            info!("service closed syslog socket");
         }
     } else {
         error!("didn't get a service notice!");
         return;
     }
-    info!("capture syslos task going away!");
 }
 
 #[tokio::main]
@@ -177,6 +174,7 @@ async fn main() -> Result<(), String> {
     // to share between our many tasks.
     // no locking, because we will only read.
     let svcs = Arc::new(services);
+    let (tx, rx) = tokio::sync::oneshot::channel::<bool>();
 
     let local_svcs = svcs.clone();
     let caps = tokio::spawn(async move {
@@ -195,24 +193,34 @@ async fn main() -> Result<(), String> {
         }   
         
         let mut listener = UnixListener::bind(&eva_sockfile).unwrap();
-        // TODO: have a one-shot rx here to get notification once all services
-        //        are gone
-        while let Some(stream) = listener.next().await {
-            match stream {
-                Ok(stream) => {
-                    tokio::spawn(capture_syslog(local_svcs.clone(), stream));
+        let mut rx_fused = rx.fuse();
+        loop {
+            let mut l_next = listener.next().fuse();
+            select! {
+                maybe_stream = l_next => {
+                    if maybe_stream.is_none() {
+                        continue;
+                    }
+                    match maybe_stream.unwrap() {
+                        Ok(stream) => {
+                            tokio::spawn(capture_syslog(local_svcs.clone(), stream));
+                        },
+                        Err(e) => {
+                            println!("error! {:?}", e);
+                        }
+                    }
                 },
-                Err(e) => {
-                    println!("error! {:?}", e);
-                }
-            }
+                done = rx_fused => break,
+                complete => break,
+            };
         }
     });
 
     futures::future::join_all(svcs.iter().map(|(_, svc)| run_svc(svc))).await;
 
-    info!("waiting for caps...");
+    tx.send(true).unwrap();
     caps.await.unwrap();
 
+    debug!("shutting down eva...");
     Ok(())
 }
