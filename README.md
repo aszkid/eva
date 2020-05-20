@@ -1,5 +1,7 @@
 # Eva
 
+_Note: this is just a toy project. Use at your own peril._
+
 Lightweight, batteries-included process monitor.
 
 ## Building
