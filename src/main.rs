@@ -10,6 +10,7 @@ use futures::{future::FutureExt, pin_mut, select, join};
 use r2d2_sqlite::SqliteConnectionManager;
 use rusqlite::{params, Connection};
 use chrono::Utc;
+use std::sync::Arc;
 
 #[derive(Clone)]
 struct Service {
@@ -98,6 +99,21 @@ async fn run_svc(svc: &Service) {
     new_event(&mut conn, &svc, "EXIT_STATUS", &status_code).expect("insert failed");
 }
 
+async fn capture_syslog(stream: tokio::net::UnixStream) {
+    let reader = BufReader::new(stream);
+    let mut lines = reader.lines();
+    if let Some(name) = lines.next_line().await.unwrap() {
+        info!("new service connected: {}", &name);
+        while let Some(line) = lines.next_line().await.unwrap() {
+            info!("syslog({}): {}", &name, &line);
+            //new_event(&mut conn, &svc, "SYSLOG", &line).expect("insert failed");
+        }
+    } else {
+        error!("didn't get a service notice!");
+        return;
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<(), String> {
     let env = env_logger::Env::default()
@@ -150,13 +166,17 @@ async fn main() -> Result<(), String> {
         }
     }
 
-    let svcs = services.clone();
-    let my_pool = pool.clone();
+    // use this reference counted wrapper around services
+    // to share between our many tasks
+    let svcs = Arc::new(services);
+
+    let local_pool = pool.clone();
+    let local_svcs = svcs.clone();
     let caps = tokio::spawn(async move {
         use tokio::net::UnixListener;
         use tokio::stream::StreamExt;
     
-        let mut conn = my_pool.get().unwrap();
+        let mut conn = local_pool.get().unwrap();
         let eva_sockfile = "/home/aszkid/dev/eva/eva_server.sock";
         match std::fs::remove_file(&eva_sockfile) {
             Err(e) => {
@@ -171,20 +191,9 @@ async fn main() -> Result<(), String> {
         let mut listener = UnixListener::bind(&eva_sockfile).unwrap();
         while let Some(stream) = listener.next().await {
             match stream {
-                Ok(stream) => { tokio::spawn(async move {
-                    let reader = BufReader::new(stream);
-                    let mut lines = reader.lines();
-                    if let Some(name) = lines.next_line().await.unwrap() {
-                        info!("new service connected: {}", &name);
-                        while let Some(line) = lines.next_line().await.unwrap() {
-                            info!("syslog({}): {}", &name, &line);
-                            //new_event(&mut conn, &svc, "SYSLOG", &line).expect("insert failed");
-                        }
-                    } else {
-                        error!("didn't get a service notice!");
-                        return;
-                    }
-                }); },
+                Ok(stream) => {
+                    tokio::spawn(capture_syslog(stream));
+                },
                 Err(e) => {
                     println!("error! {:?}", e);
                 }
@@ -192,7 +201,7 @@ async fn main() -> Result<(), String> {
         }
     });
 
-    let runs = futures::future::join_all(services.iter().map(|svc| run_svc(svc)));
+    let runs = futures::future::join_all(svcs.iter().map(|svc| run_svc(svc)));
    
     join!(caps, runs);
 
