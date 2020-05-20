@@ -6,7 +6,7 @@ use tokio::{
     prelude::*,
     io::AsyncBufReadExt
 };
-use futures::{future::FutureExt, pin_mut, select};
+use futures::{future::FutureExt, pin_mut, select, join};
 use r2d2_sqlite::SqliteConnectionManager;
 use rusqlite::{params, Connection};
 use chrono::Utc;
@@ -150,46 +150,51 @@ async fn main() -> Result<(), String> {
         }
     }
 
-    services.iter().for_each(|the_svc| {
-        // TODO: cloning this is nasty, figure out a way to appease the compiler
-        //       or make `new_event` not require a service reference
-        let svc = the_svc.clone();
-        let mut conn = svc.pool.get().unwrap();
-        tokio::spawn(async move {
-            use tokio::net::UnixListener;
-            use tokio::stream::StreamExt;
-
-            let eva_sockfile = format!("/home/aszkid/dev/eva/eva_server.{}.sock", &svc.name);
-            match std::fs::remove_file(&eva_sockfile) {
-                Err(e) => {
-                    if e.kind() != std::io::ErrorKind::NotFound {
-                        error!("failed to remove sockfile: {:?}", e);
-                        return;
-                    }
-                }
-                _ => {}
-            }   
-            
-            let mut listener = UnixListener::bind(&eva_sockfile).unwrap();
-            while let Some(stream) = listener.next().await {
-                match stream {
-                    Ok(mut stream) => {
-                        let mut data = String::new();
-                        stream.read_to_string(&mut data).await.unwrap();
-                        new_event(&mut conn, &svc, "SYSLOG", &data).expect("insert failed");
-                    },
-                    Err(e) => {
-                        println!("error! {:?}", e);
-                    }
+    let svcs = services.clone();
+    let my_pool = pool.clone();
+    let caps = tokio::spawn(async move {
+        use tokio::net::UnixListener;
+        use tokio::stream::StreamExt;
+    
+        let mut conn = my_pool.get().unwrap();
+        let eva_sockfile = "/home/aszkid/dev/eva/eva_server.sock";
+        match std::fs::remove_file(&eva_sockfile) {
+            Err(e) => {
+                if e.kind() != std::io::ErrorKind::NotFound {
+                    error!("failed to remove sockfile: {:?}", e);
+                    return;
                 }
             }
-        });
+            _ => {}
+        }   
+        
+        let mut listener = UnixListener::bind(&eva_sockfile).unwrap();
+        while let Some(stream) = listener.next().await {
+            match stream {
+                Ok(stream) => { tokio::spawn(async move {
+                    let reader = BufReader::new(stream);
+                    let mut lines = reader.lines();
+                    if let Some(name) = lines.next_line().await.unwrap() {
+                        info!("new service connected: {}", &name);
+                        while let Some(line) = lines.next_line().await.unwrap() {
+                            info!("syslog({}): {}", &name, &line);
+                            //new_event(&mut conn, &svc, "SYSLOG", &line).expect("insert failed");
+                        }
+                    } else {
+                        error!("didn't get a service notice!");
+                        return;
+                    }
+                }); },
+                Err(e) => {
+                    println!("error! {:?}", e);
+                }
+            }
+        }
     });
 
-    let futs = services.iter().map(|svc| {
-        run_svc(svc)
-    });
-    futures::future::join_all(futs).await;
+    let runs = futures::future::join_all(services.iter().map(|svc| run_svc(svc)));
+   
+    join!(caps, runs);
 
     Ok(())
 }

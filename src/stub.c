@@ -6,6 +6,18 @@
 #include <stddef.h>
 #include <stdlib.h>
 
+int fd = -1;
+
+void openlog(const char *ident, int option, int facility)
+{
+    // nothing for now
+}
+
+void closelog(void)
+{
+    close(fd);
+}
+
 void syslog(int priority, char* fmt, ...)
 {
     va_list args1;
@@ -18,32 +30,42 @@ void syslog(int priority, char* fmt, ...)
     va_end(args2);
 
     char SERVER_SOCK_FILE[512];
-    sprintf(SERVER_SOCK_FILE, "/home/aszkid/dev/eva/eva_server.%s.sock", getenv("EVA_SERVICE"));
-
+    sprintf(SERVER_SOCK_FILE, "/home/aszkid/dev/eva/eva_server.sock");
+    
+    char final_buf[512];
     struct sockaddr_un addr;
-    int len, fd;
+    int len;
 
-    if ((fd = socket(AF_UNIX, SOCK_STREAM, 0)) < 0) {
-        perror("socket");
-        return;
+    // create socket if needed
+    if (fd < 0) {
+        if ((fd = socket(AF_UNIX, SOCK_STREAM, 0)) < 0) {
+            perror("socket");
+            return;
+        }
+
+        // initialize and connect to eva server
+        memset(&addr, 0, sizeof(addr));
+        addr.sun_family = AF_UNIX;
+        strcpy(addr.sun_path, SERVER_SOCK_FILE);
+        len = (offsetof (struct sockaddr_un, sun_path)
+            + strlen(addr.sun_path) + 1);
+
+        if (connect(fd, (struct sockaddr *)&addr, len) == -1) {
+            perror("connect");
+            return;
+        }
+        
+        sprintf(final_buf, "%s\n", getenv("EVA_SERVICE"));
+        if (send(fd, final_buf, strlen(final_buf) + 1, 0) == -1) {
+            perror("send");
+            return;
+        }
     }
 
-    memset(&addr, 0, sizeof(addr));
-    addr.sun_family = AF_UNIX;
-    strcpy(addr.sun_path, SERVER_SOCK_FILE);
-    len = (offsetof (struct sockaddr_un, sun_path)
-        + strlen(addr.sun_path) + 1);
-
-    if (connect(fd, (struct sockaddr *)&addr, len) == -1) {
-        perror("connect");
-        return;
-    }
-
-    if (send(fd, buf, strlen(buf) + 1, 0) == -1) {
+    sprintf(final_buf, "%s\n", buf);
+    if (send(fd, final_buf, strlen(final_buf) + 1, 0) == -1) {
         perror("send");
         return;
     }
-
-    close(fd);
 }
 
