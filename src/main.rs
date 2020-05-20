@@ -109,7 +109,10 @@ async fn capture_syslog(svcs: Arc<HashMap<String, Service>>, stream: tokio::net:
         if let Some(svc) = svcs.get(&name) {
             let mut conn = svc.pool.get().unwrap();
             while let Some(line) = lines.next_line().await.unwrap() {
-                new_event(&mut conn, &svc, "SYSLOG", &line).expect("insert failed");
+                if line.len() < 2 {
+                    continue;
+                }
+                new_event(&mut conn, &svc, "SYSLOG", line.trim_matches('\0')).expect("insert failed");
             }
         }
     } else {
