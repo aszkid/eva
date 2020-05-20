@@ -6,11 +6,12 @@ use tokio::{
     prelude::*,
     io::AsyncBufReadExt
 };
-use futures::{future::FutureExt, pin_mut, select, join};
+use futures::{future::FutureExt, pin_mut, select};
 use r2d2_sqlite::SqliteConnectionManager;
 use rusqlite::{params, Connection};
 use chrono::Utc;
 use std::sync::Arc;
+use std::collections::HashMap;
 
 #[derive(Clone)]
 struct Service {
@@ -45,6 +46,7 @@ where R: AsyncRead + Unpin {
     while let Some(s) = lines.next_line().await.expect("failed to get line") {
         new_event(&mut conn, &svc, pipe_name, &s).expect("insert failed");
     }
+    info!("pipe {} is down", pipe_name);
 }
 
 async fn run_svc(svc: &Service) {
@@ -99,19 +101,24 @@ async fn run_svc(svc: &Service) {
     new_event(&mut conn, &svc, "EXIT_STATUS", &status_code).expect("insert failed");
 }
 
-async fn capture_syslog(stream: tokio::net::UnixStream) {
+async fn capture_syslog(svcs: Arc<HashMap<String, Service>>, stream: tokio::net::UnixStream) {
     let reader = BufReader::new(stream);
     let mut lines = reader.lines();
     if let Some(name) = lines.next_line().await.unwrap() {
         info!("new service connected: {}", &name);
-        while let Some(line) = lines.next_line().await.unwrap() {
-            info!("syslog({}): {}", &name, &line);
-            //new_event(&mut conn, &svc, "SYSLOG", &line).expect("insert failed");
+        if let Some(svc) = svcs.get(&name) {
+            let mut conn = svc.pool.get().unwrap();
+            while let Some(line) = lines.next_line().await.unwrap() {
+                info!("syslog({}): {}", &svc.name, &line);
+                new_event(&mut conn, &svc, "SYSLOG", &line).expect("insert failed");
+            }
+            info!("service closed syslog socket");
         }
     } else {
         error!("didn't get a service notice!");
         return;
     }
+    info!("capture syslos task going away!");
 }
 
 #[tokio::main]
@@ -141,7 +148,7 @@ async fn main() -> Result<(), String> {
     let i = Ini::load_from_file("eva.ini")
         .map_err(|e| format!("{:?}", e))?;
 
-    let mut services = Vec::new();
+    let mut services = HashMap::new();
     for (sec, prop) in i.iter() {
         if sec.is_none() {
             error!("empty section title, skipping");
@@ -159,7 +166,7 @@ async fn main() -> Result<(), String> {
                 exec: exec.to_string(),
                 vars: extract_envvars(prop.iter(), &re)
             };
-            services.push(svc);
+            services.insert(svc.name.clone(), svc);
             info!("   ok!");
         } else {
             error!("   skipped, no executable!");
@@ -167,16 +174,15 @@ async fn main() -> Result<(), String> {
     }
 
     // use this reference counted wrapper around services
-    // to share between our many tasks
+    // to share between our many tasks.
+    // no locking, because we will only read.
     let svcs = Arc::new(services);
 
-    let local_pool = pool.clone();
     let local_svcs = svcs.clone();
     let caps = tokio::spawn(async move {
         use tokio::net::UnixListener;
         use tokio::stream::StreamExt;
     
-        let mut conn = local_pool.get().unwrap();
         let eva_sockfile = "/home/aszkid/dev/eva/eva_server.sock";
         match std::fs::remove_file(&eva_sockfile) {
             Err(e) => {
@@ -189,10 +195,12 @@ async fn main() -> Result<(), String> {
         }   
         
         let mut listener = UnixListener::bind(&eva_sockfile).unwrap();
+        // TODO: have a one-shot rx here to get notification once all services
+        //        are gone
         while let Some(stream) = listener.next().await {
             match stream {
                 Ok(stream) => {
-                    tokio::spawn(capture_syslog(stream));
+                    tokio::spawn(capture_syslog(local_svcs.clone(), stream));
                 },
                 Err(e) => {
                     println!("error! {:?}", e);
@@ -201,9 +209,10 @@ async fn main() -> Result<(), String> {
         }
     });
 
-    let runs = futures::future::join_all(svcs.iter().map(|svc| run_svc(svc)));
-   
-    join!(caps, runs);
+    futures::future::join_all(svcs.iter().map(|(_, svc)| run_svc(svc))).await;
+
+    info!("waiting for caps...");
+    caps.await.unwrap();
 
     Ok(())
 }
