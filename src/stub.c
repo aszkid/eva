@@ -5,13 +5,27 @@
 #include <unistd.h>
 #include <stddef.h>
 #include <stdlib.h>
+#include <time.h>
+#include <stdbool.h>
+#include <arpa/inet.h>
 
 #define SERVER_SOCK_FILE "/home/aszkid/dev/eva/eva_server.sock"
 int fd = -1;
 
 
-void _eva_send(char *payload)
+void _eva_send(char *payload, bool first)
 {
+    long int tstamp = htonl(time(NULL));
+
+    // send timestamp
+    if (!first) {
+        if (send(fd, &tstamp, sizeof(long int), 0) == -1) {
+            perror("send");
+            return;
+        }
+    }
+
+    // send payload
     if (send(fd, payload, strlen(payload) + 1, 0) == -1) {
         perror("send");
         return;
@@ -47,8 +61,7 @@ void _eva_openlog()
         return;
     }
     
-    sprintf(buf, "%s\n", getenv("EVA_SERVICE"));
-    _eva_send(buf);
+    _eva_send(getenv("EVA_SERVICE"), true);
 }
 
 /*
@@ -85,9 +98,7 @@ void syslog(int priority, char* fmt, ...)
 
     _eva_openlog();
 
-    char buf[512];
-    sprintf(buf, "%s\n", payload);
-    _eva_send(buf);
+    _eva_send(payload, false);
 }
 
 //////////////////////////////////////////////////////////

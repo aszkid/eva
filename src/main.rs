@@ -9,7 +9,7 @@ use tokio::{
 use futures::{future::FutureExt, pin_mut, select};
 use r2d2_sqlite::SqliteConnectionManager;
 use rusqlite::{params, Connection};
-use chrono::Utc;
+use chrono::{DateTime, Utc, NaiveDateTime};
 use std::sync::Arc;
 use std::collections::HashMap;
 
@@ -22,12 +22,12 @@ struct Service {
     vars: Vec<(String, String)>,
 }
 
-fn new_event(conn: &mut Connection, svc: &Service, pipe: &str, data: &str) -> Result<usize, String> {
+fn new_event(conn: &mut Connection, svc: &Service, pipe: &str, data: &str, timestamp: DateTime<Utc>) -> Result<usize, String> {
     debug!("new_event({}:{}) = `{}`", &svc.name, pipe, data);
     conn.execute(
         "INSERT INTO event (service, run, timestamp, pipe, data)
             VALUES (?1, ?2, ?3, ?4, ?5)",
-        params![&svc.name, &svc.run.to_hyphenated().to_string(), &Utc::now().to_rfc3339(), pipe, data]
+        params![&svc.name, &svc.run.to_hyphenated().to_string(), &timestamp.to_rfc3339(), pipe, data]
     ).map_err(|e| format!("insert failed: {:?}", e))
 }
 
@@ -45,7 +45,7 @@ where R: AsyncRead + Unpin {
     let mut conn = svc.pool.get().map_err(|e| format!("failed to get connection: {:?}", e)).unwrap();
     let mut lines = pipe.lines();
     while let Some(s) = lines.next_line().await.expect("failed to get line") {
-        new_event(&mut conn, &svc, pipe_name, &s).expect("insert failed");
+        new_event(&mut conn, &svc, pipe_name, &s, Utc::now()).expect("insert failed");
     }
 }
 
@@ -67,7 +67,7 @@ async fn run_svc(svc: &Service) {
         .spawn()
         .expect(&format!("`{}` failed to exec", &svc.name));
 
-    new_event(&mut conn, &svc, "START", "").expect("insert failed");
+    new_event(&mut conn, &svc, "START", "", Utc::now()).expect("insert failed");
 
     let stdout = cmd.stdout.take().expect("no stdout");
     let stderr = cmd.stderr.take().expect("no stderr");
@@ -98,20 +98,34 @@ async fn run_svc(svc: &Service) {
         None => format!("Signal({})", exit_status.signal().unwrap_or(-1))
     };
 
-    new_event(&mut conn, &svc, "EXIT_STATUS", &status_code).expect("insert failed");
+    new_event(&mut conn, &svc, "EXIT_STATUS", &status_code, Utc::now()).expect("insert failed");
 }
 
 async fn capture_syslog(svcs: Arc<HashMap<String, Service>>, stream: tokio::net::UnixStream) {
-    let reader = BufReader::new(stream);
-    let mut lines = reader.lines();
-    if let Some(name) = lines.next_line().await.unwrap() {
-        if let Some(svc) = svcs.get(&name) {
+    let mut reader = BufReader::new(stream);
+    let mut buf = Vec::with_capacity(512);
+    if let Ok(_) = reader.read_until(b'\0', &mut buf).await {
+        let name = std::str::from_utf8(&buf).unwrap().trim_matches('\0');
+        info!("service {} connected", name);
+        if let Some(svc) = svcs.get(name) {
+            buf.clear();
             let mut conn = svc.pool.get().unwrap();
-            while let Some(line) = lines.next_line().await.unwrap() {
-                if line.len() < 2 {
-                    continue;
+            while let Ok(tstamp) = reader.read_i32().await {
+                let timestamp = DateTime::<Utc>::from_utc(NaiveDateTime::from_timestamp(tstamp.into(), 0), Utc);
+                while let Ok(n) = reader.read_until(b'\0', &mut buf).await {
+                    // TODO
+                    // weird, i don't know why we're getting a null byte right after the timestamp
+                    if n == 1 {
+                        continue;
+                    }
+                    let line = std::str::from_utf8(&buf).unwrap().trim_matches('\0');
+                    if line.len() < 1 {
+                        continue;
+                    }
+                    new_event(&mut conn, &svc, "SYSLOG", line, timestamp).expect("insert failed");
+                    buf.clear();
+                    break;
                 }
-                new_event(&mut conn, &svc, "SYSLOG", line.trim_matches('\0')).expect("insert failed");
             }
         }
     }
