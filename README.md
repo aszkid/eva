@@ -4,9 +4,26 @@ _Note: this is just a toy project. Use at your own peril._
 
 Lightweight, batteries-included process monitor.
 
+## Features
+
+- Capture `stdout` and `stderr` output
+- Capture `syslog` calls
+- Structured log SQLite database
+
+## Planned features
+
+- Restart policies
+- Full text search
+- Email alerts
+
+## Maybe features?
+
+- HTTP API for starting/stopping services
+- Service dependencies (A depends on B)
+
 ## Building
 
-1. Run `gcc -shared src/stub.c -o libstub.so`
+1. Run `gcc -shared -fPIC src/stub.c -o libstub.so`
 2. Run `cargo build`
 3. Profit!
 
